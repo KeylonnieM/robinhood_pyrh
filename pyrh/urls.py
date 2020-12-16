@@ -35,6 +35,15 @@ OPTIONS_BASE = API_BASE / "options/"
 OPTIONS_CHAIN_BASE = OPTIONS_BASE / "chains/"
 OPTIONS_INSTRUMENTS_BASE = OPTIONS_BASE / "instruments/"
 
+# Crypto
+CRYPTO_BASE = URL("https://nummus.robinhood.com/")
+CRYPTO_ACCOUNT = CRYPTO_BASE / "accounts/"
+CRYPTO_ORDERS_BASE = CRYPTO_BASE / "orders/"
+CRYPTO_HISTORICALS = API_BASE / "marketdata/forex/historicals/"
+CRYPTO_HOLDINGS = CRYPTO_BASE / "holdings/"
+CRYPTO_AVALIABLE = CRYPTO_BASE / "currency_pairs/"
+CRYPTO_QUOTE = API_BASE / "marketdata/forex/quotes/"
+
 # User
 USER = API_BASE / "user/"
 INVESTMENT_PROFILE = USER / "investment_profile/"
@@ -117,6 +126,26 @@ def build_orders(order_id: str = None) -> URL:
         return ORDERS_BASE / f"/{order_id}/"
     else:
         return ORDERS_BASE
+
+
+def build_crypto_order(
+    order_id: str = None, place: bool = False, cancel: bool = False
+) -> URL:
+    """Build endpoint to place cypto orders."
+
+    Args:
+        order_id: the id of the order
+        cancel: canceling order
+        place: placing order
+    Returns:
+        A constructed URL for a particular order or the base URL for all orders.
+
+    """
+    if order_id is not None:
+        if cancel:
+            return CRYPTO_ORDERS_BASE / f"{order_id}" / "cancel/"
+
+    return CRYPTO_ORDERS_BASE
 
 
 def build_news(stock: str) -> URL:

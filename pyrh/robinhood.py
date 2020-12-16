@@ -2,6 +2,7 @@
 
 from enum import Enum
 from urllib.parse import unquote
+from uuid import uuid4
 
 import dateutil
 import requests
@@ -219,10 +220,10 @@ class Robinhood(InstrumentManager, SessionManager):
 
         res = []
         watchlist = self.get(urls.WATCHLISTS)
-        if watchlist and 'results' in watchlist:
+        if watchlist and "results" in watchlist:
             data = self.get(watchlist["results"][0]["url"])
             for rec in data["results"]:
-                res.append(self.get(rec['instrument']))
+                res.append(self.get(rec["instrument"]))
 
         return res
 
@@ -1540,6 +1541,311 @@ class Robinhood(InstrumentManager, SessionManager):
         # Order type cannot be cancelled without a valid cancel link
         else:
             raise ValueError("Unable to cancel order ID: " + order_id)
+
+    ###########################################################################
+    #                                  Crypto                                 #
+    ###########################################################################
+    def crypto_profile(self):
+        """Fetch account information regarding crypto.
+
+        Returns:
+            (:obj:`dict`): `accounts` endpoint payload
+
+        """
+
+        return self.get(urls.CRYPTO_ACCOUNT)["results"]
+
+    def crypto_owned(self):
+        """Returns list of cryptos that the user has shares in
+
+        Returns:
+            (:object: `dict`): Non-zero positions
+
+        """
+
+        return self.get(str(urls.CRYPTO_HOLDINGS) + "?nonzero=true")
+
+    def crypto_symbol_to_id(self, symbol=""):
+        """ Return id associated with crypto symbol
+
+        Returns:
+            string: Id of crypto symbol
+
+        """
+        if symbol == "":
+            return
+        id = None
+        trading_cryptos = self.get(urls.CRYPTO_AVALIABLE)
+        for crypto in trading_cryptos["results"]:
+            if crypto["asset_currency"]["code"] == symbol:
+                id = crypto["id"]
+                break
+
+        if id is None:
+            print("Symbol not found")
+
+        return id
+
+    def print_crypto_quote(self, symbol=""):  # pragma: no cover
+        """Print crypto quote information.
+
+        Args:
+            symbol (str): ticker to fetch
+
+        Returns:
+            None
+
+        """
+
+        id = self.crypto_symbol_to_id(symbol)
+        symbol_data = self.get(str(urls.CRYPTO_QUOTE) + str(id) + "/")
+        quote_str = symbol + ": $" + symbol_data["mark_price"]
+        print(quote_str)
+
+    def print_crypto_quotes(self, symbols):  # pragma: no cover
+        """Print a collection of crypto quotes.
+
+        Args:
+            symbols (:obj:`list`): list of crypto symbols
+
+        Returns:
+            None
+
+        """
+
+        if symbols is None:
+            return
+
+        for symbol in symbols:
+            self.print_crypto_quote(symbol)
+
+    def get_historical_crypto(self, symbol, interval, span, bounds=Bounds.REGULAR):
+        self.endpoint_ = """Fetch historical data for crypto.
+
+        Note: valid interval/span configs
+            interval = 5minute | 10minute + span = day, week
+            interval = day + span = year
+            interval = week
+
+        Args:
+            symbol (str): crypto symbol
+            interval (str): resolution of data
+            span (str): length of data
+            bounds (:obj:`Bounds`, optional): 'extended' or 'regular' trading hours
+
+        Returns:
+            (:obj:`dict`) values returned from `historicals` endpoint
+
+        """
+
+        if isinstance(bounds, str):  # recast to Enum
+            bounds = Bounds(bounds)
+
+        id = self.crypto_symbol_to_id(symbol)
+        payload = {
+            ("interval", interval),
+            ("span", span),
+            ("bounds", bounds.name.lower()),
+        }
+
+        historicals = self.get((str(urls.CRYPTO_HISTORICALS) + str(id) + "/"), payload)
+
+        return historicals
+
+    def all_crypto_orders(self):
+        """ Retrieve all crypto orders placed by users
+
+        Returns:
+            (:obj:`dict`) values returned from `order` endpoint
+
+        """
+        orders = self.get(urls.CRYPTO_ORDERS_BASE)
+        return orders["results"]
+
+    def get_open_crypto_orders(self):
+        """ Retrieve all open crypto orders placed by users
+
+        Returns:
+            (:obj:`dict`) values returned from `order` endpoint
+
+        """
+
+        open_orders = []
+        orders = self.all_crypto_orders()
+        for order in orders:
+            if order["cancel_url"] is not None:
+                open_orders.append(order)
+
+        return open_orders
+
+    def round_num(self, num):
+        """Round number depending on value
+
+        Returns:
+            num (float): number value after rounding
+        """
+
+        if num <= 1e-2:
+            return round(num, 6)
+        elif num < 1e0:
+            return round(num, 4)
+        else:
+            return round(num, 2)
+
+    def crypto_order_buy_by_price(
+        self, symbol, dollar_amount, price_type="bid_price", time_in_force="gtc"
+    ):
+        """Submits crypto buy by price order to Robinhood
+
+        Returns:
+            (:obj:`requests.request`): result from `orders` post command
+        """
+
+        id = self.crypto_symbol_to_id(symbol)
+        symbol_data = self.get(str(urls.CRYPTO_QUOTE) + str(id) + "/")
+        price = self.round_num(float(symbol_data[price_type]))
+
+        share_fraction = self.round_num((float(dollar_amount) / float(price)))
+
+        payload = {
+            "account_id": self.crypto_profile()[0]["id"],
+            "currency_pair_id": id,
+            "price": price,
+            "quantity": share_fraction,
+            "ref_id": str(uuid4()),
+            "side": "buy",
+            "time_in_force": time_in_force,
+            "type": "market",
+        }
+        print(payload)
+        self.session.headers["Content-Type"] = "application/json"
+        response = requests.post(
+            urls.build_crypto_order(place=True),
+            json=payload,
+            headers=self.session.headers,
+        )
+        self.session.headers[
+            "Content-Type"
+        ] = "application/x-www-form-urlencoded; charset=utf-8"
+        return response.json()
+
+    def order_buy_crypto_by_quantity(
+        self, symbol, quantity, price_type="ask_price", time_in_force="gtc"
+    ):
+        """Submits crypto buy by quantity order to Robinhood
+
+        Returns:
+            (:obj:`requests.request`): result from `orders` post command
+        """
+
+        id = self.crypto_symbol_to_id(symbol)
+        symbol_data = self.get(str(urls.CRYPTO_QUOTE) + str(id) + "/")
+        price = self.round_num(float(symbol_data[price_type]))
+
+        payload = {
+            "account_id": self.crypto_profile()[0]["id"],
+            "currency_pair_id": id,
+            "price": price,
+            "quantity": quantity,
+            "ref_id": str(uuid4()),
+            "side": "buy",
+            "time_in_force": time_in_force,
+            "type": "market",
+        }
+        print(payload)
+        self.session.headers["Content-Type"] = "application/json"
+        response = requests.post(
+            urls.build_crypto_order(place=True),
+            json=payload,
+            headers=self.session.headers,
+        )
+        self.session.headers[
+            "Content-Type"
+        ] = "application/x-www-form-urlencoded; charset=utf-8"
+        return response.json()
+
+    def crypto_order_sell_by_price(
+        self, symbol, dollar_amount, price_type="bid_price", time_in_force="gtc"
+    ):
+        """Submits crypto sell by price order to Robinhood
+
+        Returns:
+            (:obj:`requests.request`): result from `orders` post command
+        """
+
+        id = self.crypto_symbol_to_id(symbol)
+        symbol_data = self.get(str(urls.CRYPTO_QUOTE) + str(id) + "/")
+        price = self.round_num(float(symbol_data[price_type]))
+
+        share_fraction = self.round_num((float(dollar_amount) / float(price)))
+
+        payload = {
+            "account_id": self.crypto_profile()[0]["id"],
+            "currency_pair_id": id,
+            "price": price,
+            "quantity": share_fraction,
+            "ref_id": str(uuid4()),
+            "side": "sell",
+            "time_in_force": time_in_force,
+            "type": "market",
+        }
+        print(payload)
+        self.session.headers["Content-Type"] = "application/json"
+        response = requests.post(
+            urls.build_crypto_order(place=True),
+            json=payload,
+            headers=self.session.headers,
+        )
+        self.session.headers[
+            "Content-Type"
+        ] = "application/x-www-form-urlencoded; charset=utf-8"
+        return response.json()
+
+    def crypto_order_sell_by_quantity(
+        self, symbol, quantity, price_type="bid_price", time_in_force="gtc"
+    ):
+        """Submits crypto sell by quantity order to Robinhood
+
+        Returns:
+            (:obj:`requests.request`): result from `orders` post command
+        """
+
+        id = self.crypto_symbol_to_id(symbol)
+        symbol_data = self.get(str(urls.CRYPTO_QUOTE) + str(id) + "/")
+        price = self.round_num(float(symbol_data[price_type]))
+
+        payload = {
+            "account_id": self.crypto_profile()[0]["id"],
+            "currency_pair_id": id,
+            "price": price,
+            "quantity": quantity,
+            "ref_id": str(uuid4()),
+            "side": "sell",
+            "time_in_force": time_in_force,
+            "type": "market",
+        }
+        print(payload)
+        self.session.headers["Content-Type"] = "application/json"
+        response = requests.post(
+            urls.build_crypto_order(place=True),
+            json=payload,
+            headers=self.session.headers,
+        )
+        self.session.headers[
+            "Content-Type"
+        ] = "application/x-www-form-urlencoded; charset=utf-8"
+        return response.json()
+
+    def cancel_crypto_order(self, order_id):
+        """Cancels a specific crypto order.
+
+        Returns:
+            (:obj:`dict`) values returned from `orders` post request
+        """
+
+        data = self.get(urls.build_crypto_order(order_id=order_id, cancel=True))
+
+        return data
 
 
 class RobinhoodSchema(SessionManagerSchema):
